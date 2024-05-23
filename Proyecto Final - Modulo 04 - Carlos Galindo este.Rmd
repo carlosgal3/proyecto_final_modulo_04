@@ -1,0 +1,814 @@
+---
+title: "Modulo 4 - Proyecto"
+author: "Carlos Galindo"
+date: "2024-05-19"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+Como primer paso, vamos a cargar todas las librerías que utilizaremos y posterirmente se realizará la carga de los datos train y test del documento y luego se procederá a realizar un análisis exploratorio de los datos. 
+
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(rpart)
+library(rpart.plot)
+library(corrplot)
+library(vcd)
+library(vcdExtra)
+library(caret)
+library(weights)
+library(e1071)
+library(pROC)
+library(randomForest)
+
+
+
+
+train <- read.csv("train.csv", stringsAsFactors = F)
+test <- read.csv("test.csv", stringsAsFactors = F) #
+
+```
+
+```{r}
+str(train)
+```
+Se observa que en su mayoría los datos son categóricos como las variables Gender,  Driving_license, Previously_Insured, Vehicle_age, Vehicle_Damage y Policy_Sales_channel. Las otras variables como la edad o Vintage (dias asociado) son enteros pero se podrían condensar en rangos. 
+
+```{r}
+summary(train)
+```
+Podemos ver el resumen de cada una de las variables. Vamos a renombrar algunas columnas para facilitar el script. esto se hará tanto en Train como en test. Ojo porque test no tiene la columna de response debido a que es el dataframe para evaluar las respuestas.
+
+```{r}
+train = train %>%
+  rename(id = id, gender = Gender, age = Age, driverl = Driving_License, 
+         region = Region_Code, previns = Previously_Insured, 
+         v_age = Vehicle_Age, v_damage = Vehicle_Damage,
+         annualprem = Annual_Premium, polisales = Policy_Sales_Channel, vintage = Vintage, resp = Response)
+
+test = test %>%
+  rename(id = id, gender = Gender, age = Age, driverl = Driving_License, 
+         region = Region_Code, previns = Previously_Insured, 
+         v_age = Vehicle_Age, v_damage = Vehicle_Damage,
+         annualprem = Annual_Premium, polisales = Policy_Sales_Channel, vintage = Vintage)
+
+```
+
+a continuación analizaremos la relacion que puede haber entre las variables con la variable response. Primero veremos la relacion de las variables cuantitativas.
+```{r}
+nums <- sapply(train, is.numeric)
+data_cor = cor(train[,nums])
+View(data_cor)
+
+corrplot.mixed(cor(train[,nums]), 
+               lower="number", 
+               upper="color", tl.pos="lt",
+               diag="n", order="hclust")
+```
+Podemos observar que las variables que más correlación tienen con la variable response en este caso es 
+- previns (accidentes previos) y 
+- polisales (política de venta). 
+- La edad tiene una correlación pero es muy debil. nos enfocaremos en estas 3 variables
+
+
+
+Edad vs Response
+```{r}
+ggplot(train, aes(age, resp)) + geom_col()
+```
+La distribución de la edad respecto a response parece tener una distribución normal. Esto podría ser un indicador de correlación.
+
+
+Histograma de edad, color-coded por respuesta
+```{r}
+ggplot(train,aes(x=age,fill=as.character(resp)))+geom_histogram()
+```
+
+Se puede observar que hay diferencia entre la distribución de las edades en función de su respuesta. La diferencia principal es en las personas menores de 30 años, se observa claramente que para este rango de edad la respuesta positiva es muy baja (proporcionalmente a la cantidad de gente en ese rango). Para profundizar en la variable de edad la estaremos dividiendo en rangos de edad.
+
+ 
+ Genero vs Response
+```{r}
+mosaic(resp~ gender, data = train)
+
+```
+Muchas personas no estuvieron interesadas pero de las personas que si lo estuvieron, fueron más hombres que mujeres. 
+```{r}
+prop.table(table(train$gender, train$resp),1)
+```
+```{r}
+ggplot(train,aes(x=age,fill=gender))+geom_histogram()+facet_wrap(~gender)
+
+```
+La distribución de edad en función del genero es muy similar y ademas las proporciones de la respuesta en función del genero tampoco son muy diferentes. Parce ser que el sexo no es de las variables con mayor relación a la respuesta.
+
+
+Licencia vs response
+```{r}
+mosaic(resp~ driverl, data = train)
+```
+```{r}
+table(train$driverl, train$resp)
+```
+```{r}
+prop.table(table(train$driverl, train$resp),1)
+```
+Por la diferencia en la cantidad de personas para quienes tienen licencia y no la tienen, es más util observar la tabla de proporciones. Podemos observar en la tabla que hay una mayor tendencia a no tener interés para quienes no tienen licencia. 
+
+
+Region vs response
+```{r}
+ggplot(train, aes(region, resp)) + geom_col()
+```
+Existen muchas regiones y con la información que tenemos no podemos agruparlas de alguna forma objetiva. Para verificar si puede llegar a ser una variable importante veremos si la proporción de respuesta varía mucho entre las regiones, lo veremos en la siguiente tabla:
+
+```{r}
+prop.table(table(train$region, train$resp),1)
+```
+Podemos observar que no hay ninguna región que sea muy diferente al resto, en cuanto a proporciones, por lo que podemos determinar que no se necesario separar algunas regiones ni dummificar a cada una. 
+
+
+
+Response == 1, edad del vehiculo
+```{r}
+ggplot(train, aes(v_age, resp, color = v_damage)) + geom_col()
+```
+
+Para la variable de antiguedad del carro, podemos ver que en su mayoría son propietarios de vehiculos de entre 1 y 2 años, le siguen los de menos de 1 año y por ultimo los que tienen un vehículo de más de 2 años. Por su lado, también podemos ver que la variable de daños previos también es significativa para la muestra.
+
+
+Proporcion de respuesta por edad de vehículo
+```{r}
+table(train$v_age, train$resp)
+
+prop.table(table(train$v_age, train$resp),1)
+```
+Podemos observar que en proporcion, las personas con carros de antiguedad mayor a 2 años están más interesados en un seguro de vehículo. No obstante esto puede deberse a que los vehículos de menor antiguedad ya tienen un seguro de vehículo. Lo estaremos comprobando en el siguiente gráfico:
+
+
+Previamente asegurado, edad de vehículo
+```{r}
+mosaic(previns~ v_age, data = train)
+```
+Efectivamente podemos comprobar que la diferencia en proporciones se debe a que los carros de más de 2 años de antiguedad casi no tienen seguro.
+
+
+```{r}
+Sin_Seguro = train %>%
+  filter(previns == 0)
+mosaic(resp~ v_age, data = Sin_Seguro)
+```
+
+Los clientes cuyo vehículo tiene una antiguedad mayor a 2 años, tienden a tener una respuesta más positiva (separando la muestra en quienes no tienen ya seguro de vehículo).
+
+```{r}
+prop.table(table(Sin_Seguro$v_age, Sin_Seguro$resp),1)
+```
+Podemos ver númericamente lo que nos indica el gráfico anterior. 
+
+
+Daños a vehículo
+```{r}
+ggplot(train, aes(v_damage, resp)) + geom_col()
+mosaic(resp~ v_damage + v_age, data = train)
+```
+Parece existir una relación entre las personas que tienen interés y que su vehículo haya sufrido un problema en el pasado. 
+
+```{r}
+train %>%
+  filter(annualprem < 1e+05) %>%
+  ggplot(aes(x= as.character(resp), 
+             y= annualprem)) +
+  geom_boxplot(fill=c("olivedrab3","mediumpurple2"))
+
+```
+
+Se puede observar que las personas interesadas en un seguro de vehículo pagan una prima anual parecida a las personas que no están tan interesadas. 
+
+
+```{r}
+Prop_polisales = as.data.frame(prop.table(table(train$polisales, train$resp),1))
+Prop_polisales %>%
+  filter(Var2 == 1) %>%
+  arrange(desc(Freq)) %>%
+  ggplot(aes(x= Var1, y=Freq))+geom_col()
+```
+Podemos observar que si hay hay algunos canales de venta con mayor proporción, la desventaja es que desconocemos a que tipo de canal hace referencia el código y complica que los podamos agrupar en categorías para reducir el número. 
+
+
+```{r}
+ggplot(train, aes(x= as.character(resp), 
+             y= vintage)) +
+  geom_boxplot(fill=c("olivedrab3","mediumpurple2"))
+
+```
+La distribución del Vintage (días de asociación con la empresa) en función del interés del seguro parece ser muy similar, por lo que es muy posible que no sea una variable muy determinante.  
+
+
+
+#1. Relaciones entre variables que podrían afectar en la decisión del cliente.
+
+Luego de analizar los datos, tomamos las siguientes variables como definitivas para generar el primer modelo:
+1. previns
+2. polisales
+3. age
+4. gender
+5. v_age
+6. v_damage
+
+
+### HIPOTESIS
+
+### Se plantea la hipótesis de que las variables con mayor impacto, según el análisis exploratorio, sobre el interés de una persona en contratar un seguro para su vehículo son las siguientes:
+
+### - Previns, se observa que si la persona ya tiene seguro de vehículo no estará interesada en adquirir otro seguro del mismo tipo. 
+
+### - Edad, personas menores de 30 tienen mucho menos interés.
+
+### - Daño al vehículo, para las personas que tienen un vehículo que ha recibido daño en el pasado, están más interesadas en adquirir el seguro.
+
+### Se espera que existan variables que también esten relacionadas pero las 3 anteriores se espera que sean las que tengan un impacto mayor.
+
+
+
+
+
+### ¿Qué proporción de personas que ya tienen seguro no están interesadas en adquirir otro producto del mismo tipo?
+
+### Para las personas menores a 30 años: ¿Qué proporción no está interesada en adquirir seguro de vehículo y como se compara con otros rangos?
+
+### ¿Qué proporción de la gente que ha dañado su vehículo está interesada en adquirir un seguro de vehículo y como se compara con la gente que no ha dañado su vehículo?
+
+
+
+
+### ¿Qué proporción de personas que ya tienen seguro no están interesadas en adquirir otro producto del mismo tipo?
+
+```{r}
+mosaic(resp~ previns, data = train)
+```
+```{r}
+table(train$previns, train$resp)
+prop.table(table(train$previns, train$resp),1)
+```
+Se puede observar que si la persona ya tiene seguro de vehículo, la probabilidad de que esté interesado en otro es casi nula. Es decir que esta variable es muy influyente.
+
+
+###### Para las personas menores a 30 años: ¿Qué proporción no está interesada en adquirir seguro de vehículo y como se compara con otros rangos?
+```{r}
+train = train %>%
+  mutate(rango_age = case_when(age < 30 ~ "Joven",
+                               age < 50 ~ "Adulto Joven",
+                               age < 90 ~ "Adulto")) %>%
+  mutate(rango_age = factor(rango_age, 
+                            levels = c("Joven", "Adulto Joven", "Adulto")))
+
+test = test %>%
+  mutate(rango_age = case_when(age < 30 ~ "Joven",
+                               age < 50 ~ "Adulto Joven",
+                               age < 90 ~ "Adulto")) %>%
+  mutate(rango_age = factor(rango_age, 
+                            levels = c("Joven", "Adulto Joven", "Adulto")))
+
+mosaic(resp~ rango_age, data = train)
+
+```
+```{r}
+prop.table(table(train$rango_age, train$resp),1)
+
+```
+Con lo anterior se comprueba que la gente mayor 30, tiene una mayor probabilidad a estar interesado en el seguro de automóvil.
+
+
+### ¿Qué proporción de la gente que ha dañado su vehículo está interesada en adquirir un seguro de vehículo y como se compara con la gente que no ha dañado su vehículo?
+
+```{r}
+mosaic(resp~ v_damage , data = train)
+prop.table(table(train$v_damage, train$resp),1)
+```
+Parece existir una relación entre las personas que tienen interés y que su vehículo haya sufrido un problema en el pasado.
+
+
+
+
+
+### MODELOS SUPERVISADOS:
+
+### MODELO DE NAIVE BAYES
+
+```{r}
+set.seed(456)
+
+modeloBayes1 = naiveBayes(resp ~ previns + polisales + age + gender + v_age + v_damage, data = train)
+predNBtrain1 = predict(modeloBayes1, newdata = train, type="raw")
+
+predictionNBtrain1 = as.data.frame(predNBtrain1)
+predictionNBtrain1$pred1<-ifelse(predictionNBtrain1[,1]>predictionNBtrain1[,2],0,1)
+resultsNBtrain1<-table(train$resp, predictionNBtrain1$pred1)
+resultsNBtrain1
+```
+Podemos hacer el primer modelo utilizando las variables previamente mencionadas y luego, al compararlas con el resultado real obtenemos las siguientes proporciones:
+
+```{r}
+prop.table(resultsNBtrain1)
+
+```
+Se acertó en un 61% de los casos cuando el usuario NO estaba interesado y en un 11% cuando si estaba interesado. Sin embargo los falsos negativos y falsos positivos fueron en total un 28% restante lo cual puede considerarse todavía bastante. Vamos a calcular ahora los valores de accuracy, recall y precision:
+
+```{r}
+accuracyNBtrain1<-sum(diag(resultsNBtrain1))/sum(resultsNBtrain1)
+accuracyNBtrain1
+
+```
+Un accuracy del 71%
+
+```{r}
+recallNBtrain1<-(resultsNBtrain1[2,2]/(resultsNBtrain1[2,1]+resultsNBtrain1[2,2]))
+recallNBtrain1
+```
+Un recall del 87%
+
+```{r}
+precisionBNtrain1<-(resultsNBtrain1[2,2]/(resultsNBtrain1[1,2]+resultsNBtrain1[2,2]))
+precisionBNtrain1
+
+```
+Un precision del 28%
+
+El modelo nos dice entonces que no es muy confiable por la precisión, esto puede ser un problema debido a que queremos saber exactamente quienes si están interesados para tener un mejor mercado objetivo. 
+Ahora vamos a explorar el modelo pero restringiendo la variable de edad que era la que menor correlación tenía con el modelo.
+
+```{r}
+modeloBayes2 = naiveBayes(resp ~ previns + polisales + gender + v_age + v_damage, data = train)
+predNBtrain2 = predict(modeloBayes2, newdata = train, type="raw")
+
+predictionNBtrain2 = as.data.frame(predNBtrain2)
+predictionNBtrain2$pred2<-ifelse(predictionNBtrain2[,1]>predictionNBtrain2[,2],0,1)
+resultsNBtrain2<-table(train$resp, predictionNBtrain2$pred2)
+resultsNBtrain2
+```
+Obtenemos entonces la proporción de los resultados del modelo 2:
+
+```{r}
+prop.table(resultsNBtrain2)
+```
+Ahora obtenemos los datos de accuracy, recall y precision:
+```{r}
+accuracyNBtrain2<-sum(diag(resultsNBtrain2))/sum(resultsNBtrain2)
+accuracyNBtrain2
+```
+Un accuracy del 67%.
+```{r}
+recallNBtrain2<-(resultsNBtrain2[2,2]/(resultsNBtrain2[2,1]+resultsNBtrain2[2,2]))
+recallNBtrain2
+```
+Un recall del 91%
+```{r}
+precisionBNtrain2<-(resultsNBtrain2[2,2]/(resultsNBtrain2[1,2]+resultsNBtrain2[2,2]))
+precisionBNtrain2
+```
+Un precision del 27%
+
+
+para este caso, el modelo bajó tanto en su nivel de precision como de accuracy, por lo cual no es conveniente restringir la variable de edad ya que solamente el valor del recall aumentó pero no es eso lo que en verdad buscamos. 
+
+
+###-----------------------------###
+###  MODELOS DE DECISITION TREE 1
+###-----------------------------###
+
+```{r}
+set.seed(456)
+inTrain <- sample(nrow(train), 300, replace = FALSE)
+train_2 <- train[inTrain,]
+test_2 <- train[-inTrain,]
+prop.table(table(train$resp))
+```
+
+Se creó una muestra con 300 observaciones debido a que se probaron los modelos de árboles de decisión y estos parecen colapsar con muchas observaciones, se tomo la decisión de trabajar con una muestra pequeña y el resto dejarlo para testear el modelo. 
+
+
+```{r}
+modeloDT1<-rpart(resp~.-age-id, data=train_2,method="class") # recursive partitioning tree
+modeloDT1
+```
+Imprimimos el modelo en función de todas las variables menos el id y el age (importante tomar en cuenta que se está tomando la edad pero en ragos anteriormente determinado)
+
+```{r}
+rpart.plot(modeloDT1)
+```
+# El modelo 1 (Decision Tree) de forma visual. 
+
+```{r}
+prediDT1<-predict(modeloDT1, newdata=test_2, type="class")
+prediDT1 = as.character(prediDT1)
+prediDT1 = ifelse(prediDT1 == 1,"SI","NO")
+resultadoDT1<-table(test_2$resp, prediDT1)
+resultadoDT1
+```
+
+Estos son los resultados del modelo respecto al set de testeo que tiene 380,809 observaciones. 
+#Calculo el acurracy
+
+```{r}
+accuracyDT1<-sum(diag(resultadoDT1))/sum(resultadoDT1)
+accuracyDT1
+```
+Tenemos un accuracy alto, este nos dice las observaciones correctas que se tuvieron ya sean positivas o negativas. 
+
+#TP/(TP+FN)
+```{r}
+recallDT1<-(resultadoDT1[2,2]/(resultadoDT1[2,1]+resultadoDT1[2,2]))
+recallDT1
+```
+Tenemos un recall bajo, mi modelo dice en muchas ocasiones que el cliente no está interesado en el seguro pero realmente si lo está. El costo de equivocarse es alto ya que no estamos podiendo identificar de manera efectiva a la gente que si está interesada para poder eplicar estrategias específicas para ellos. 
+
+
+#TP/(TP+FP)
+```{r}
+precisionDT1<-(resultadoDT1[2,2]/(resultadoDT1[1,2]+resultadoDT1[2,2]))
+precisionDT1
+```
+El precision también es  bajo, en este indicador el modelo nos indica que si hay interés cuando realmente no lo hay. el costo de un presicion bajo es invertir recursos en clientes que definitamente no están interesados. 
+
+
+
+###-----------------------------###
+###  MODELOS DE DECISITION TREE 2
+###-----------------------------###
+
+```{r}
+modeloDT2 <-rpart(formula = resp~previns + age + gender + v_age + v_damage+driverl, method="class", data=train_2)
+modeloDT2
+```
+Imprimimos el modelo de en función de previns + age + gender + v_age + v_damage+driverl, se decidió tomar la edad sin rangos para que modelo sea el que indique las divisiones de forma óptima. La idea también es incluir solo las variables que se mostraron significativas en el análisis exploratorio. 
+
+```{r}
+rpart.plot(modeloDT2)
+```
+El modelo 2 (Decision Tree) de forma visual. 
+
+```{r}
+prediDT2<-predict(modeloDT2, newdata=test_2, type="class")
+prediDT2 = as.character(prediDT2)
+prediDT2 = ifelse(prediDT2 == 1,"SI","NO")
+resultadoDT2<-table(test_2$resp, prediDT2)
+resultadoDT2
+```
+Estos son los resultados del modelo respecto al set de testeo que tiene 380,809 observaciones. 
+
+#Calculo el acurracy
+```{r}
+accuracyDT2<-sum(diag(resultadoDT2))/sum(resultadoDT2)
+accuracyDT2
+```
+Tenemos un accuracy alto, este nos dice las observaciones correctas que se tuvieron ya sean positivas o negativas. Es ligeramente mayor al modelo anterior. 
+#TP/(TP+FN)
+```{r}
+recallDT2<-(resultadoDT2[2,2]/(resultadoDT2[2,1]+resultadoDT2[2,2]))
+recallDT2
+```
+Tenemos un recall ligeramente más alto que en el modelo anterior, logrando reducir el costo de no indentificar a los clientes que realmente si están interesados. 
+#TP/(TP+FP)
+```{r}
+precisionDT2<-(resultadoDT2[2,2]/(resultadoDT2[1,2]+resultadoDT2[2,2]))
+precisionDT2
+```
+Tenemos un presicion significativamente más alto que en el modelo anterior, logrando reducir el costo de recursos invertidos en clientes que no están interesados en el seguro. 
+
+
+###-----------------------------###
+###  MODELOS DE RANDOM FOREST 1
+###-----------------------------###
+
+
+```{r}
+modelF1 <- randomForest(resp ~ .-age-id , importance = F, type = "class", data=train_2)
+modelF1
+```
+Imprimos el modelo 1 de Random Forest en función de todas las variables menos el id y el age (importante tomar en cuenta que se está tomando la edad pero en rangos anteriormente determinados)
+
+```{r}
+plot(modelF1,type="l",col="red",main="") 
+```
+Podemos observar que el modelo se estabiliza a partir de los 200 árboles aproximadamente. 
+
+```{r}
+predRDF1 <- predict(modelF1, newdata = test_2, type = "class")
+predRD2F1 = ifelse(predRDF1 > 0.5,"SI","NO")
+resultsDTF1<-table(test_2$resp, predRD2F1)
+resultsDTF1
+```
+Estos son los resultados del modelo respecto al set de testeo que tiene 380,809 observaciones.
+```{r}
+prop.table(resultsDTF1)
+```
+Un vistazo a las proporciones según los resultados obtenidos.
+#ACCURACY
+```{r}
+accuracyDTF1<-sum(diag(resultsDTF1))/sum(resultsDTF1)
+accuracyDTF1
+```
+Tenemos un accuracy alto, este nos dice las observaciones correctas que se tuvieron ya sean positivas o negativas.
+
+#TP/(TP+FN)
+```{r}
+recallF1<-(resultsDTF1[2,2]/(resultsDTF1[2,1]+resultsDTF1[2,2]))
+recallF1
+```
+Tenemos un recall muy bajo, mi modelo dice en muchas ocasiones que el cliente no está interesado en el seguro pero realmente si lo está. El costo de equivocarse es alto ya que no estamos podiendo idenficar de manera efectiva a la gente que si está interesada para poder eplicar estrategias específicas para ellos. 
+
+#TP/(TP+FP)
+```{r}
+precisionF1<-(resultsDTF1[2,2]/(resultsDTF1[1,2]+resultsDTF1[2,2]))
+precisionF1
+```
+El precision también es relativamente bajo, en este indicador el modelo nos indica que si hay interés cuando realmente no lo hay. el costo de un presicion bajo es invertir recursos en clientes que definitamente no están interesados. 
+
+
+
+###-----------------------------###
+###  MODELOS DE RANDOM FOREST 2
+###-----------------------------###
+
+```{r}
+modelF2 <- randomForest(resp ~ previns + age + gender + v_age + v_damage+driverl , importance = F, type = "class",data=train_2)
+modelF2
+```
+Imprimos el modelo 1 de Random Forest en función de todas las variables previns + age + gender + v_age + v_damage+driverl, se decidió tomar la edad sin rangos para que modelo sea el que indique las divisiones de forma óptima. La idea también es incluir solo las variables que se mostraron significativas en el análisis exploratorio.
+```{r}
+plot(modelF2,type="l",col="red",main="") #Grafica recomendada
+#par(new=TRUE)
+#plot(modelF2,type="l",col="green", main="Modelos")
+```
+El modelo parece estabilizarse a partir de los 150 árboles. 
+```{r}
+predRDF2 <- predict(modelF2, newdata = test_2, type = "class")
+predRD2F2 = ifelse(predRDF2 > 0.5,"SI","NO")
+resultsDTF2<-table(test_2$resp, predRD2F2)
+resultsDTF2
+```
+Imprimos los resultados del modelo comparados al set de testo. 
+```{r}
+prop.table(resultsDTF2)
+```
+Observamos las proporciones de los resultados. 
+```{r}
+accuracyDTF2<-sum(diag(resultsDTF2))/sum(resultsDTF2)
+accuracyDTF2
+```
+Tenemos un accuracy alto y muy ligeramente por debajo del modelo anterior. 
+```{r}
+#TP/(TP+FN)
+recallF2<-(resultsDTF2[2,2]/(resultsDTF2[2,1]+resultsDTF2[2,2]))
+recallF2
+```
+El recall sigue siendo muy bajo pero ligeramente por arriba del modelo anteiror. 
+```{r}
+#TP/(TP+FP)
+precisionF2<-(resultsDTF2[2,2]/(resultsDTF2[1,2]+resultsDTF2[2,2]))
+precisionF2
+```
+EL precision es ligeramente por debajo del modelo anterior, podriamos decir que son modelos con muy poca diferencia en cuanto a estos indicadores. 
+
+
+
+### Regresion Logistica
+
+```{r}
+
+trainRL <- train
+testRL <- test
+
+### cambiamos las variables categóricas a numéricas
+
+trainRL$gender <- ifelse(trainRL$gender == "Male", 1, 0)
+trainRL$v_damage <- ifelse(trainRL$v_damage == "Yes", 1, 0)
+trainRL$v_age <- ifelse(trainRL$v_age == "> 2 Years", 2, ifelse(trainRL$v_age == "1-2 Year", 1, 0))
+str(trainRL)
+trainRL$rango_age = NULL
+corrplot(cor(trainRL))
+
+```
+
+```{r}
+set.seed(123)
+trainRL_ind <- sample(nrow(trainRL), 0.7*nrow(trainRL))
+
+trainRL_train <- trainRL[trainRL_ind,]
+trainRL_test <- trainRL[-trainRL_ind,]
+
+modeloRL_01 <- glm(resp ~.,data = trainRL_train, family=binomial)
+summary(modeloRL_01) ## podemos ver que las variables ID, vintage, y region no 
+## son estadisticamente significativas
+
+
+```
+
+Se estableció un set.seed para hacer reproducibles los resultados obtenidos en el modelo, y se creó un modelo de regresión logística que busca predecir la variable response en función de todas las variables. Al ver el resumen del modelo podemos identificar que las variables ID, vintage y region no son estadísticamente significativas, por lo que las sacaremos y crearemos otro modelo.
+
+
+```{r}
+modeloRL_02 <- glm(resp ~ gender+age+driverl+previns+v_age+v_damage+annualprem+polisales, data = trainRL_train, family = binomial)
+
+summary(modeloRL_02)
+
+```
+Vemos ahora que las variables tomadas en cuenta para el modelo son estadísticamente signififcativas, por lo que procederemos con la predicción de este primer modelo de regresión logística.
+
+```{r}
+  predictRL <- predict(modeloRL_02, newdata = trainRL_test, type = "response")
+hist(predictRL)
+
+### vemos en el histograma que el umbral de probabilidad predecida para saber
+### si alguien optara por un seguro vehicular, no es mayor a 45% por lo que para este
+### caso utilizaremos un umbral del 0.25 para predecir si alguien comprara el seguro
+
+
+```
+
+Al correr la función de "predict" y realizar un histograma con el resultado, podemos ver que el umbral de probabilidad predicha para saber si alguien optará por un seguro vehicular no es mayor a 45%, por lo que para este caso de negocio se utilizará un umbral del 0.25 para la predicción de compras de seguros.
+
+
+```{r}
+predictRL <- as.data.frame(predictRL)
+
+predictRL$respuesta <- ifelse(predictRL > 0.25,"SI","NO")
+
+results_testRL<-table(trainRL_test$resp, predictRL$respuesta)
+results_testRL
+prop.table(results_testRL)
+
+```
+Las tablas anteriores representan a los clientes interesados en conseguir un seguro vehicular según nuestro modelo de regresión logísitca, comparados con los casos reales. De igual forma podemos ver una tabla de proporciones de nuestros resultados. 
+
+Se procederá ahora con el cálculo del accuracy, recall y precision de nuestro primer modelo de regresión logística.
+
+```{r}
+### Calculamos accuracy
+
+accuracyRL_01 <-sum(diag(results_testRL))/sum(results_testRL)
+print("Accuracy Regresión Logística 01")
+accuracyRL_01 ## 79%
+
+### Calculamos recall
+
+recallRL_01<-(results_testRL[2,2]/(results_testRL[2,1]+results_testRL[2,2]))
+print("Recall Regresión Logística 01")
+recallRL_01 ## 58%
+
+### Calculamos precision
+
+precisionRL_01<-(results_testRL[2,2]/(results_testRL[1,2]+results_testRL[2,2]))
+print("Precision Regresión Logística 01")
+precisionRL_01 ## 32%
+```
+Se puede ver que nuestro modelo tuvo una exactitud del 79% en los resultados predichos, siendo mejor que ambos modelos de Naive Bayes. La precisión de este modelo también fue ligeramente mejor, con un 32%. Sin embargo, el recall fue significativamente menor en contraste al segundo modelo de Naive Bayes.
+
+
+Se llevará a cabo ahora otro modelo de regresión logística, en el cual únicamente tomaremos en cuenta las siguientes variables: previns, v_age, v_damage, annualprem, y polisales.
+
+```{r}
+
+modeloRL_03 <- glm(resp ~ previns+v_age+v_damage+annualprem+polisales, data = trainRL_train, family = binomial)
+
+summary(modeloRL_03)
+
+predictRL_02 <- predict(modeloRL_03, newdata = trainRL_test, type = "response")
+hist(predictRL_02)
+
+### vemos en el histograma que el umbral de probabilidad predecida para saber
+### si alguien optara por un seguro vehicular, no es mayor a 45% por lo que para este
+### caso utilizaremos un umbral del 0.25 para predecir si alguien comprara el seguro
+
+
+```
+
+Con base en el histograma generado, nuevamente se utilizará un umbral del 0.25 para predecir si alguien comprará el seguro vehicular. Los resultados de este segundo modelo de regresión logística, y sus proporciones, son los siguientes:
+
+```{r}
+predictRL_02 <- as.data.frame(predictRL_02)
+
+predictRL_02$respuesta <- ifelse(predictRL_02 > 0.25,"SI","NO")
+
+results_testRL_02<-table(trainRL_test$resp, predictRL_02$respuesta)
+results_testRL_02
+prop.table(results_testRL_02)
+
+```
+Procedemos ahora a calcular el accuracy, recall y precision del segundo modelo de regresión.
+
+```{r}
+### Calculamos accuracy
+
+accuracyRL_02 <-sum(diag(results_testRL_02))/sum(results_testRL_02)
+print("Accuracy Regresión Logística 02")
+accuracyRL_02 ## 76%
+
+### Calculamos recall
+
+recallRL_02<-(results_testRL_02[2,2]/(results_testRL_02[2,1]+results_testRL_02[2,2]))
+print("Recall Regresión Logística 02")
+recallRL_02 ## 59%
+
+### Calculamos precision
+
+precisionRL_02<-(results_testRL_02[2,2]/(results_testRL_02[1,2]+results_testRL_02[2,2]))
+print("Precision Regresión Logística 02")
+precisionRL_02 ## 28%
+```
+Podemos observar que nuestro accuracy y precision fueron menores, en 3 y 4 puntos porcentuales respectivamente. Únicamente resultó siendo mejor el recall, aunque por solamente un punto porcentual en comparación al modelo de regresión logística anterior.
+
+
+### Comparacion de modelos
+```{r}
+#Comparacion final
+
+titulos_modelos = c("Modelo1DT", "Modelo2DT", "Modelo1NB", "Modelo2NB", "Modelo1LOG", "Modelo2LOG","ModeloRF1","ModeloRF2")
+Accuracy = c(round(accuracyDT1,4), 
+             round(accuracyDT2,4),
+             round(accuracyNBtrain1,4),
+             round(accuracyNBtrain2,4),
+             round(accuracyRL_01,4),
+             round(accuracyRL_02,4),
+             round(accuracyDTF1,4),
+             round(accuracyDTF2,4))
+Recall = c(round(recallDT1,4), 
+           round(recallDT2,4),
+           round(recallNBtrain1,4),
+           round(recallNBtrain2,4),
+           round(recallRL_01,4),
+           round(recallRL_02,4),
+           round(recallF1,4),
+           round(recallF2,4))
+Precision = c(round(precisionDT1,4), 
+              round(precisionDT2,4),
+              round(precisionBNtrain1,4),
+              round(precisionBNtrain2,4),
+              round(precisionRL_01,4),
+              round(precisionRL_02,4),
+              round(precisionF1,4),
+              round(precisionF2,4))
+
+Resultado = as.data.frame(rbind(Accuracy, 
+                                Recall, 
+                                Precision))
+colnames(Resultado) = titulos_modelos
+
+Resultado
+library(tidyr)
+
+ResultadoDF = as.data.frame(Resultado) %>%
+  mutate(metrica = row.names(Resultado)) %>%
+  gather("Modelo", "Valor", -metrica)  %>%
+  filter(metrica == "Accuracy") 
+
+ResultadoDF %>%
+  ggplot(aes(x=metrica, y = Valor, fill = Modelo)) + 
+  geom_col(position = "dodge")
+ResultadoDF
+ResultadoDF = as.data.frame(Resultado) %>%
+  mutate(metrica = row.names(Resultado)) %>%
+  gather("Modelo", "Valor", -metrica)  %>%
+  filter(metrica == "Recall") 
+ResultadoDF
+ResultadoDF %>%
+  ggplot(aes(x=metrica, y = Valor, fill = Modelo)) + 
+  geom_col(position = "dodge")
+
+ResultadoDF = as.data.frame(Resultado) %>%
+  mutate(metrica = row.names(Resultado)) %>%
+  gather("Modelo", "Valor", -metrica)  %>%
+  filter(metrica == "Precision") 
+ResultadoDF
+
+ResultadoDF %>%
+  ggplot(aes(x=metrica, y = Valor, fill = Modelo)) + 
+  geom_col(position = "dodge")
+```
+
+### Conclusiones y recomendaciones
+
+
+### Conclusion 1
+
+Por el caso de negocio presentado se prioriza el RECALL ya que el objetivo con el que se construye el modelo es identificar a la gente interesada en el seguro del vehiculo. Es más costoso en este caso no identificar a gente sí interesada que el modelo identifica a personas no interesada como sí interesadas. 
+
+Los modelos de NAIVE BAIYES son muy superiores en cuanto a Recall, en ACCURACY Y PRECISION no son el mejor modelo pero la diferencia con el resto de modelos no es muy grande. 
+
+Por lo anterior se escoge el modelo #2 del NAIVE BAYES. 
+
+
+### Conclusion 2
+Se encontró que las variables planteadas a la hipótesis si tienen impacto en si las persona está o no interesada en el seguro de vehículo. No obstante ninguna de esas variables, ni ninguna de las que tiene el set de datos en general, tienen un impacto que sea muy determinante en el respuesta del cliente. 
+
+
+### Recomendaciones
+Buscar más variables que puedan explicar el comportamiento de los clientes. 
+
+Recomendaría repetir los modelos una vez se tenga una muestra más grande con personas que sí están interesadas, ya que la proporción excesiva de personas no interesadas hace difícil que los modelos identifiquen a personas si interesadas. 
+
